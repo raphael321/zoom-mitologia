@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Do Olimpo ao Hades — zoom infinito</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  #gl { display: block; width: 100vw; height: 100vh; }
+  #ui { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
+        display: flex; gap: 6px; padding: 6px; border-radius: 999px;
+        background: #0008; backdrop-filter: blur(8px); transition: opacity .4s; }
+  #ui button { font: 600 13px system-ui, sans-serif; color: #fffc; background: none;
+        border: 0; padding: 7px 13px; border-radius: 999px; cursor: pointer; }
+  #ui button[aria-pressed="true"] { background: #fff; color: #000; }
+  #ui button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+  body.idle #ui { opacity: 0; }
+  #loading { position: fixed; inset: 0; display: grid; place-items: center;
+        color: #fff8; font: 14px system-ui, sans-serif; }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="loading">carregando…</div>
+<nav id="ui" aria-label="Efeitos">
+  <button data-fx="0" aria-pressed="true">Original</button>
+  <button data-fx="1">Cores</button>
+  <button data-fx="2">Redemoinho</button>
+  <button data-fx="3">Ácido</button>
+  <button data-fx="4">Brilho</button>
+</nav>
+
+<!--
+  Cada quadro N+1 é o miolo de N reduzido a 50%; o miolo do último é o primeiro.
+  Controles: roda do mouse / ↑ ↓ = velocidade · 1–5 = efeito · F = tela cheia
+  ?versao=animada troca os quadros listados em "animados" pelos vídeos em loop.
+-->
+<script id="zoom-config" type="application/json">
+{ "speed": 0.12, "feather": 0.06,
+  "animados": { "0": "animacao/q00.mp4", "7": "animacao/q07.mp4",
+                "10": "animacao/q10.mp4", "11": "animacao/q11.mp4" },
+  "imgarray": ["quadros/q00.jpg","quadros/q01.jpg","quadros/q02.jpg","quadros/q03.jpg",
+               "quadros/q04.jpg","quadros/q05.jpg","quadros/q06.jpg","quadros/q07.jpg",
+               "quadros/q08.jpg","quadros/q09.jpg","quadros/q10.jpg","quadros/q11.jpg"] }
+</script>
+
+<script>
+const cfg = JSON.parse(document.getElementById('zoom-config').textContent);
+const LAYERS = 4;
+let frames = [], T = 0, speed = cfg.speed, fx = 0, last = 0, t0 = performance.now();
+
+// 1) Composição do zoom num canvas 2D fora da tela
+const comp = document.createElement('canvas');
+const ctx = comp.getContext('2d');
+
+// Máscara com as bordas esfumadas, para a costura com o quadro de fora sumir.
+function featherMask(w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  g.fillStyle = '#000'; g.fillRect(0, 0, w, h);
+  g.globalCompositeOperation = 'destination-in';
+  const f = cfg.feather;
+  for (const [x1, y1] of [[w, 0], [0, h]]) {
+    const grad = g.createLinearGradient(0, 0, x1, y1);
+    grad.addColorStop(0, 'rgba(0,0,0,0)');
+    grad.addColorStop(f, 'rgba(0,0,0,1)');
+    grad.addColorStop(1 - f, 'rgba(0,0,0,1)');
+    grad.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, w, h);
+  }
+  return c;
+}
+
+// Cada quadro vira um canvas com a borda esfumada. Imagem: pronto uma vez.
+// Vídeo: o canvas é redesenhado a cada frame (refresh), só quando está visível.
+function feathered(src) {
+  const isVideo = src instanceof HTMLVideoElement;
+  const w = isVideo ? src.videoWidth : src.width, h = isVideo ? src.videoHeight : src.height;
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const g = c.getContext('2d'), mask = featherMask(w, h);
+  c.refresh = () => {
+    g.globalCompositeOperation = 'copy'; g.drawImage(src, 0, 0, w, h);
+    g.globalCompositeOperation = 'destination-in'; g.drawImage(mask, 0, 0);
+  };
+  c.refresh();
+  if (!isVideo) c.refresh = null;
+  return c;
+}
+
+function compose() {
+  const W = comp.width, H = comp.height, n = frames.length;
+  const base = Math.max(W / frames[0].width, H / frames[0].height);   // "cover"
+  const zoom = Math.pow(2, T % 1);                                    // 1× → 2×
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  // b = -1 é o quadro que acabou de sair; ele cobre as bordas suavizadas do b = 0
+  for (let b = -1; b < LAYERS; b++) {
+    const img = frames[((Math.floor(T) + b) % n + n) % n];
+    const s = base * zoom / Math.pow(2, b) * (frames[0].width / img.width);
+    const w = img.width * s, h = img.height * s;
+    if (w < 2) break;
+    if (img.refresh) img.refresh();
+    ctx.drawImage(img, (W - w) / 2, (H - h) / 2, w, h);
+  }
+}
+
+// 2) Efeitos psicodélicos num shader WebGL por cima da composição
+const glc = document.getElementById('gl');
+const gl = glc.getContext('webgl2') || glc.getContext('webgl');
+const VS = `attribute vec2 p; varying vec2 uv;
+  void main(){ uv = p*0.5+0.5; uv.y = 1.0-uv.y; gl_Position = vec4(p,0,1); }`;
+const FS = `precision highp float;
+  varying vec2 uv; uniform sampler2D tex; uniform float t; uniform int fx; uniform vec2 res;
+  vec3 hue(vec3 c, float a){            // gira o matiz preservando o brilho
+    const vec3 k = vec3(0.57735);
+    float ca = cos(a);
+    return c*ca + cross(k,c)*sin(a) + k*dot(k,c)*(1.0-ca);
+  }
+  vec2 swirl(vec2 u, float amt){         // torce a imagem em volta do centro
+    vec2 d = (u-0.5)*vec2(res.x/res.y,1.0);
+    float r = length(d);
+    float a = amt*sin(t*0.4)*exp(-r*2.2) + amt*0.15*sin(r*14.0-t*1.5);
+    float c = cos(a), s = sin(a);
+    d = mat2(c,-s,s,c)*d;
+    return d/vec2(res.x/res.y,1.0)+0.5;
+  }
+  void main(){
+    vec2 u = uv;
+    if (fx==2 || fx==3) u = swirl(u, fx==3 ? 2.2 : 1.4);
+    if (fx==3) u += 0.004*vec2(sin(u.y*40.0+t*2.0), cos(u.x*40.0+t*1.7));
+    vec3 c = texture2D(tex, u).rgb;
+    if (fx==1) c = hue(c, t*0.6);
+    if (fx==3) {
+      c = hue(c, t*0.9 + length(u-0.5)*6.0);
+      c = mix(c, c*c*2.2, 0.35);
+    }
+    if (fx==4) {                          // brilho: bloom barato + saturação pulsante
+      vec3 b = vec3(0.0);
+      for (int i=0;i<8;i++){ float a=float(i)*0.785; b += texture2D(tex, u+0.006*vec2(cos(a),sin(a))).rgb; }
+      c = c + 0.35*max(b/8.0-0.55, 0.0)*2.5;
+      float l = dot(c, vec3(0.299,0.587,0.114));
+      c = mix(vec3(l), c, 1.25+0.2*sin(t*1.3));
+      c = hue(c, 0.25*sin(t*0.5));
+    }
+    gl_FragColor = vec4(c,1.0);
+  }`;
+function shader(type, src) {
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog); gl.useProgram(prog);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+const pLoc = gl.getAttribLocation(prog, 'p');
+gl.enableVertexAttribArray(pLoc); gl.vertexAttribPointer(pLoc, 2, gl.FLOAT, false, 0, 0);
+gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.MIRRORED_REPEAT);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.MIRRORED_REPEAT);
+const U = { t: gl.getUniformLocation(prog, 't'), fx: gl.getUniformLocation(prog, 'fx'),
+            res: gl.getUniformLocation(prog, 'res') };
+
+function resize() {
+  const dpr = Math.min(devicePixelRatio, 2);
+  glc.width = comp.width = Math.round(innerWidth * dpr);
+  glc.height = comp.height = Math.round(innerHeight * dpr);
+  gl.viewport(0, 0, glc.width, glc.height);
+}
+
+function frame(now) {
+  const dt = Math.min(0.1, (now - last) / 1000); last = now;
+  T = (T + speed * dt + frames.length) % frames.length;
+  compose();
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, comp);
+  gl.uniform1f(U.t, (now - t0) / 1000);
+  gl.uniform1i(U.fx, fx);
+  gl.uniform2f(U.res, glc.width, glc.height);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  requestAnimationFrame(frame);
+}
+
+// 3) Controles
+const buttons = [...document.querySelectorAll('#ui button')];
+function setFx(n) {
+  fx = n;
+  buttons.forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.fx === n)));
+}
+buttons.forEach(b => b.addEventListener('click', () => setFx(+b.dataset.fx)));
+addEventListener('wheel', e => { speed = Math.max(-1, Math.min(1, speed - e.deltaY * 0.0005)); }, { passive: true });
+addEventListener('keydown', e => {
+  if (e.key === 'ArrowUp') speed = Math.min(1, speed + 0.03);
+  if (e.key === 'ArrowDown') speed = Math.max(-1, speed - 0.03);
+  if (e.key >= '1' && e.key <= '5') setFx(+e.key - 1);
+  if (e.key.toLowerCase() === 'f') document.fullscreenElement ? document.exitFullscreen() : glc.requestFullscreen();
+});
+let idle;
+addEventListener('pointermove', () => {
+  document.body.classList.remove('idle');
+  clearTimeout(idle); idle = setTimeout(() => document.body.classList.add('idle'), 2500);
+});
+addEventListener('resize', resize);
+
+function load(src) {
+  return new Promise((ok, fail) => {
+    const fail_ = () => fail(new Error('Falhou: ' + src));
+    if (src.endsWith('.mp4')) {
+      const v = document.createElement('video');
+      Object.assign(v, { muted: true, loop: true, playsInline: true, preload: 'auto', src });
+      v.addEventListener('loadeddata', () => v.play().then(() => ok(v), () => ok(v)), { once: true });
+      v.onerror = fail_;
+      return;
+    }
+    const im = new Image();
+    im.onload = () => ok(im); im.onerror = fail_;
+    im.src = src;
+  });
+}
+
+(async () => {
+  resize();
+  const animada = new URLSearchParams(location.search).get('versao') === 'animada';
+  const srcs = cfg.imgarray.map((s, i) => (animada && cfg.animados[i]) || s);
+  try {
+    frames = (await Promise.all(srcs.map(load))).map(feathered);
+  } catch (err) {
+    document.getElementById('loading').textContent = err.message;
+    return;
+  }
+  document.getElementById('loading').remove();
+  const fxParam = new URLSearchParams(location.search).get('fx');
+  if (fxParam) setFx(+fxParam);
+  requestAnimationFrame(t => { last = t; frame(t); });
+})();
+</script>
+</body>
+</html>

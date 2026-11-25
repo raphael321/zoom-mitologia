@@ -1,0 +1,11 @@
+# Rascunhos e bases intermediárias da geração
+bases/
+candidatos/
+classico/
+# Vídeos finais vão na Release (passam do limite de 100 MB do GitHub)
+video/
+# Originais do Veo (16:9) e quadros de partida; o repo guarda só os recortes quadrados
+animacao/*_veo_1080p.mp4
+animacao/*_inicio.png
+cenas.md
+.DS_Store
