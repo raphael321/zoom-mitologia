@@ -49,7 +49,10 @@ if a.animada:
     cfg = json.loads(cfg.split('id="zoom-config" type="application/json">')[1].split('</script>')[0])
     animados = {int(k): v for k, v in cfg['animados'].items()}
 
-paths = sorted(glob.glob('quadros/q*.jpg'))
+# O site usa versões leves; para o vídeo, as originais (quadros_hd/, animacao_hd/) se existirem.
+paths = sorted(glob.glob('quadros_hd/q*.jpg')) or sorted(glob.glob('quadros/q*.jpg'))
+if glob.glob('animacao_hd/q*.mp4'):
+    animados = {k: v.replace('animacao/', 'animacao_hd/') for k, v in animados.items()}
 frames = [Clip(animados[i]) if i in animados else feathered(Image.open(p)) for i, p in enumerate(paths)]
 clips = [f for f in frames if isinstance(f, Clip)]
 n, W, H = len(frames), a.w, a.h

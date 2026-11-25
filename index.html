@@ -16,11 +16,13 @@
   #ui button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
   body.idle #ui { opacity: 0; }
   @media (max-width: 560px) {
-    #ui { gap: 2px; padding: 4px; max-width: calc(100vw - 16px); box-sizing: border-box; }
+    #ui { gap: 2px; padding: 4px; width: max-content; max-width: calc(100vw - 16px);
+          box-sizing: border-box; flex-wrap: wrap; justify-content: center; border-radius: 18px; }
     #ui button { font-size: 12px; padding: 6px 8px; }
   }
   #loading { position: fixed; inset: 0; display: grid; place-items: center;
-        color: #fff8; font: 14px system-ui, sans-serif; }
+        color: #fff8; font: 14px system-ui, sans-serif; pointer-events: none; }
+  #loading.corner { inset: 12px 14px auto auto; display: block; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -53,6 +55,7 @@
 <script>
 const cfg = JSON.parse(document.getElementById('zoom-config').textContent);
 const LAYERS = 4;
+const N = cfg.imgarray.length, SIZE = 1024;   // nº de quadros e lado de referência (px)
 let frames = [], anims = {}, animOn = true, T = 0, speed = cfg.speed, fx = 0, last = 0, t0 = performance.now();
 
 // 1) Composição do zoom num canvas 2D fora da tela
@@ -99,10 +102,10 @@ function feathered(src) {
 }
 
 function compose() {
-  const W = comp.width, H = comp.height, n = frames.length;
+  const W = comp.width, H = comp.height, n = N;
   // A pintura inteira cabe na menor dimensão da tela (nada de cabeça cortada em tela larga);
   // o resto é preenchido pelos quadros de fora (b < 0), que já foram pintados em volta dela.
-  const base = Math.min(W, H) / frames[0].width;
+  const base = Math.min(W, H) / SIZE;
   const zoom = Math.pow(2, T % 1);                                    // 1× → 2×
   const aspect = Math.max(W, H) / Math.min(W, H);
   // quantos quadros de fora precisam para cobrir a tela inclusive com as bordas esfumadas
@@ -111,7 +114,9 @@ function compose() {
   for (let b = -outer; b < LAYERS; b++) {
     const k = ((Math.floor(T) + b) % n + n) % n;
     const img = (animOn && anims[k]) || frames[k];
-    const s = base * zoom / Math.pow(2, b) * (frames[0].width / img.width);
+    // quadro que ainda não chegou: o de fora já tem uma versão menor dele no centro
+    if (!img) continue;
+    const s = base * zoom / Math.pow(2, b) * (SIZE / img.width);
     const w = img.width * s, h = img.height * s;
     if (w < 2) break;
     if (img.refresh) img.refresh();
@@ -188,7 +193,7 @@ function resize() {
 
 function frame(now) {
   const dt = Math.min(0.1, (now - last) / 1000); last = now;
-  T = (T + speed * dt + frames.length) % frames.length;
+  T = (T + speed * dt + N) % N;
   compose();
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, comp);
   gl.uniform1f(U.t, (now - t0) / 1000);
@@ -227,11 +232,13 @@ addEventListener('pointermove', () => {
 });
 addEventListener('resize', resize);
 
-function load(src) {
+function loadOnce(src) {
   return new Promise((ok, fail) => {
     const fail_ = () => fail(new Error('Falhou: ' + src));
-    if (src.endsWith('.mp4')) {
+    if (src.includes('.mp4')) {
       const v = document.createElement('video');
+      // iOS só toca sozinho com muted + playsinline como atributos
+      v.setAttribute('muted', ''); v.setAttribute('playsinline', '');
       Object.assign(v, { muted: true, loop: true, playsInline: true, preload: 'auto', src });
       v.addEventListener('loadeddata', () => v.play().then(() => ok(v), () => ok(v)), { once: true });
       v.onerror = fail_;
@@ -243,25 +250,55 @@ function load(src) {
   });
 }
 
+// Rede de celular derruba uma requisição de vez em quando: tenta de novo antes de desistir.
+async function load(src, tries = 4) {
+  for (let i = 0; ; i++) {
+    try { return await loadOnce(i ? `${src}?r=${i}` : src); }
+    catch (err) {
+      if (i + 1 >= tries) throw err;
+      await new Promise(r => setTimeout(r, 800 * 2 ** i));
+    }
+  }
+}
+
 (async () => {
   resize();
-  try {
-    frames = (await Promise.all(cfg.imgarray.map(load))).map(feathered);
-  } catch (err) {
-    document.getElementById('loading').textContent = err.message;
-    return;
-  }
-  document.getElementById('loading').remove();
-  // Os clipes chegam depois, sem segurar o início; até lá aparece a pintura parada.
+  const loadingEl = document.getElementById('loading');
+  // Ordem: o quadro inicial e os de fora (que preenchem as laterais) primeiro, depois o caminho do zoom.
+  const order = [0, N - 1, N - 2, ...Array.from({ length: N - 3 }, (_, i) => i + 1)];
+  let done = 0, started = false, failed = [];
+  const start = () => {
+    if (started) return;
+    started = true;
+    requestAnimationFrame(t => { last = t; frame(t); });
+  };
+  const progress = () => {
+    loadingEl.textContent = `carregando… ${done}/${N}`;
+    if (started) loadingEl.classList.add('corner');   // já rodando: o aviso vai para o canto
+    if (done + failed.length === N) loadingEl.remove();
+  };
+  // Até 3 downloads ao mesmo tempo, na ordem de prioridade.
+  const queue = [...order];
+  await Promise.all([0, 1, 2].map(async () => {
+    while (queue.length) {
+      const k = queue.shift();
+      try { frames[k] = feathered(await load(cfg.imgarray[k])); done++; }
+      catch (err) { failed.push(k); console.warn(err.message); }
+      if (frames[0] && frames[N - 1] && frames[N - 2]) start();
+      progress();
+    }
+  }));
+  if (!frames[0]) { loadingEl.textContent = 'Não carregou. Verifique a conexão e recarregue a página.'; return; }
+  start();
+  // Os clipes chegam por último, sem segurar o início; até lá aparece a pintura parada.
   for (const [i, src] of Object.entries(cfg.animados)) {
     load(src).then(v => { const c = feathered(v); c.video = v; anims[i] = c; if (!animOn) v.pause(); })
              .catch(err => console.warn(err.message));
   }
-  if (new URLSearchParams(location.search).get('versao') === 'estatica') setAnim(false);
-  const fxParam = new URLSearchParams(location.search).get('fx');
-  if (fxParam) setFx(+fxParam);
-  requestAnimationFrame(t => { last = t; frame(t); });
 })();
+if (new URLSearchParams(location.search).get('versao') === 'estatica') setAnim(false);
+const fxParam = new URLSearchParams(location.search).get('fx');
+if (fxParam) setFx(+fxParam);
 </script>
 </body>
 </html>
