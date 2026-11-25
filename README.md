@@ -19,6 +19,7 @@ python3 -m http.server 8765
 Abra http://localhost:8765 (o WebGL não carrega as imagens direto do arquivo, por isso o servidor).
 
 - **Roda do mouse / ↑ ↓** — velocidade (dá para ir para trás)
+- **No celular:** toque na tela mostra/esconde a barra; arrastar para baixo acelera, para cima desacelera e volta
 - **1–5** — efeitos: Original, Cores, Redemoinho, Ácido, Brilho
 - **A** / botão **Animação** — liga e desliga os clipes animados (Zeus, Poseidon, Estige e Hades); começa ligado
 - **F** — tela cheia

@@ -4,9 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Do Olimpo ao Hades — zoom infinito</title>
+<link rel="icon" href="data:,">
 <style>
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
-  #gl { display: block; width: 100vw; height: 100vh; }
+  #gl { display: block; width: 100vw; height: 100vh; touch-action: none; }
+  #speed { position: fixed; top: 50%; right: 18px; transform: translateY(-50%);
+        font: 600 15px system-ui, sans-serif; color: #fff; background: #0008;
+        backdrop-filter: blur(8px); padding: 8px 12px; border-radius: 999px;
+        opacity: 0; transition: opacity .3s; pointer-events: none; }
+  #speed.show { opacity: 1; }
   #ui { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
         display: flex; gap: 6px; padding: 6px; border-radius: 999px;
         background: #0008; backdrop-filter: blur(8px); transition: opacity .4s; }
@@ -14,7 +20,7 @@
         border: 0; padding: 7px 13px; border-radius: 999px; cursor: pointer; }
   #ui button[aria-pressed="true"] { background: #fff; color: #000; }
   #ui button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
-  body.idle #ui { opacity: 0; }
+  body.idle #ui { opacity: 0; pointer-events: none; }
   @media (max-width: 560px) {
     #ui { gap: 2px; padding: 4px; width: max-content; max-width: calc(100vw - 16px);
           box-sizing: border-box; flex-wrap: wrap; justify-content: center; border-radius: 18px; }
@@ -28,6 +34,7 @@
 <body>
 <canvas id="gl"></canvas>
 <div id="loading">carregando…</div>
+<div id="speed" aria-live="polite"></div>
 <nav id="ui" aria-label="Efeitos">
   <button data-fx="0" aria-pressed="true">Original</button>
   <button data-fx="1">Cores</button>
@@ -56,6 +63,7 @@
 const cfg = JSON.parse(document.getElementById('zoom-config').textContent);
 const LAYERS = 4;
 const N = cfg.imgarray.length, SIZE = 1024;   // nº de quadros e lado de referência (px)
+const FADE_MS = 700;                            // esmaecimento do que chega depois do início
 let frames = [], anims = {}, animOn = true, T = 0, speed = cfg.speed, fx = 0, last = 0, t0 = performance.now();
 
 // 1) Composição do zoom num canvas 2D fora da tela
@@ -111,16 +119,24 @@ function compose() {
   // quantos quadros de fora precisam para cobrir a tela inclusive com as bordas esfumadas
   const outer = Math.max(1, Math.ceil(Math.log2(aspect / (1 - 2 * cfg.feather))));
   ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
-  for (let b = -outer; b < LAYERS; b++) {
-    const k = ((Math.floor(T) + b) % n + n) % n;
-    const img = (animOn && anims[k]) || frames[k];
-    // quadro que ainda não chegou: o de fora já tem uma versão menor dele no centro
-    if (!img) continue;
+  const now = performance.now();
+  // o que chega depois do início entra esmaecendo, em vez de saltar por cima da cena
+  const alphaOf = c => c.bornAt ? Math.min(1, (now - c.bornAt) / FADE_MS) : 1;
+  const draw = (img, b) => {
     const s = base * zoom / Math.pow(2, b) * (SIZE / img.width);
     const w = img.width * s, h = img.height * s;
-    if (w < 2) break;
     if (img.refresh) img.refresh();
+    ctx.globalAlpha = alphaOf(img);
     ctx.drawImage(img, (W - w) / 2, (H - h) / 2, w, h);
+    ctx.globalAlpha = 1;
+  };
+  for (let b = -outer; b < LAYERS; b++) {
+    if (base * zoom / Math.pow(2, b) * SIZE < 2) break;
+    const k = ((Math.floor(T) + b) % n + n) % n;
+    const still = frames[k], clip = animOn ? anims[k] : null;
+    // quadro que ainda não chegou: o de fora já tem uma versão menor dele no centro
+    if (still && (!clip || alphaOf(clip) < 1)) draw(still, b);
+    if (clip) draw(clip, b);
   }
 }
 
@@ -214,22 +230,61 @@ const animBtn = document.getElementById('anim');
 function setAnim(on) {
   animOn = on;
   animBtn.setAttribute('aria-pressed', String(on));
-  Object.values(anims).forEach(c => on ? c.video.play().catch(() => {}) : c.video.pause());
+  Object.values(anims).forEach(c => {
+    if (on) { c.bornAt = performance.now(); c.video.play().catch(() => {}); } else c.video.pause();
+  });
 }
 animBtn.addEventListener('click', () => setAnim(!animOn));
-addEventListener('wheel', e => { speed = Math.max(-1, Math.min(1, speed - e.deltaY * 0.0005)); }, { passive: true });
+// Velocidade: mostra um indicador relativo à velocidade padrão (◀ = para trás).
+const speedEl = document.getElementById('speed');
+let speedHide;
+function setSpeed(v) {
+  speed = Math.max(-1, Math.min(1, v));
+  const r = speed / cfg.speed;
+  speedEl.textContent = Math.abs(r) < 0.05 ? '❚❚ parado' : `${r < 0 ? '◀' : '▶'} ${Math.abs(r).toFixed(1)}×`;
+  speedEl.classList.add('show');
+  clearTimeout(speedHide); speedHide = setTimeout(() => speedEl.classList.remove('show'), 900);
+}
+addEventListener('wheel', e => setSpeed(speed - e.deltaY * 0.0005), { passive: true });
 addEventListener('keydown', e => {
-  if (e.key === 'ArrowUp') speed = Math.min(1, speed + 0.03);
-  if (e.key === 'ArrowDown') speed = Math.max(-1, speed - 0.03);
+  if (e.key === 'ArrowUp') setSpeed(speed + 0.03);
+  if (e.key === 'ArrowDown') setSpeed(speed - 0.03);
   if (e.key >= '1' && e.key <= '5') setFx(+e.key - 1);
   if (e.key.toLowerCase() === 'a') setAnim(!animOn);
   if (e.key.toLowerCase() === 'f') document.fullscreenElement ? document.exitFullscreen() : glc.requestFullscreen();
 });
+// Barra de efeitos: aparece com o mouse (desktop) ou com um toque na tela (celular) e some sozinha.
 let idle;
-addEventListener('pointermove', () => {
+function showBar(ms) {
   document.body.classList.remove('idle');
-  clearTimeout(idle); idle = setTimeout(() => document.body.classList.add('idle'), 2500);
+  clearTimeout(idle); idle = setTimeout(() => document.body.classList.add('idle'), ms);
+}
+function hideBar() { clearTimeout(idle); document.body.classList.add('idle'); }
+addEventListener('pointermove', e => { if (e.pointerType === 'mouse') showBar(2500); });
+document.getElementById('ui').addEventListener('pointerdown', () => showBar(4000));
+showBar(3000);
+
+// Gestos na tela: toque = mostra/esconde a barra; arrastar para baixo acelera,
+// para cima desacelera e, passando do zero, anda para trás.
+const SWIPE = 0.0008;    // velocidade por pixel arrastado
+let drag = null;
+glc.addEventListener('pointerdown', e => {
+  drag = { id: e.pointerId, y: e.clientY, y0: e.clientY, moved: false };
+  glc.setPointerCapture(e.pointerId);
 });
+glc.addEventListener('pointermove', e => {
+  if (!drag || e.pointerId !== drag.id) return;
+  if (Math.abs(e.clientY - drag.y0) > 10) drag.moved = true;
+  if (drag.moved) setSpeed(speed + (e.clientY - drag.y) * SWIPE);
+  drag.y = e.clientY;
+});
+glc.addEventListener('pointerup', e => {
+  if (drag && !drag.moved && e.pointerType !== 'mouse') {
+    document.body.classList.contains('idle') ? showBar(4000) : hideBar();
+  }
+  drag = null;
+});
+glc.addEventListener('pointercancel', () => { drag = null; });
 addEventListener('resize', resize);
 
 function loadOnce(src) {
@@ -277,14 +332,22 @@ async function load(src, tries = 4) {
     if (started) loadingEl.classList.add('corner');   // já rodando: o aviso vai para o canto
     if (done + failed.length === N) loadingEl.remove();
   };
+  // Começa quando os 5 primeiros da fila resolveram (inicial, laterais e os 2 de dentro visíveis);
+  // o resto entra esmaecendo conforme chega.
+  const essentials = order.slice(0, 5), settled = new Set();
   // Até 3 downloads ao mesmo tempo, na ordem de prioridade.
   const queue = [...order];
   await Promise.all([0, 1, 2].map(async () => {
     while (queue.length) {
       const k = queue.shift();
-      try { frames[k] = feathered(await load(cfg.imgarray[k])); done++; }
+      try {
+        const c = feathered(await load(cfg.imgarray[k]));
+        c.bornAt = started ? performance.now() : 0;
+        frames[k] = c; done++;
+      }
       catch (err) { failed.push(k); console.warn(err.message); }
-      if (frames[0] && frames[N - 1] && frames[N - 2]) start();
+      settled.add(k);
+      if (frames[0] && essentials.every(e => settled.has(e))) start();
       progress();
     }
   }));
@@ -292,7 +355,11 @@ async function load(src, tries = 4) {
   start();
   // Os clipes chegam por último, sem segurar o início; até lá aparece a pintura parada.
   for (const [i, src] of Object.entries(cfg.animados)) {
-    load(src).then(v => { const c = feathered(v); c.video = v; anims[i] = c; if (!animOn) v.pause(); })
+    load(src).then(v => {
+      v.currentTime = 0;   // o clipe começa igual à pintura parada, então a troca não salta
+      const c = feathered(v); c.video = v; c.bornAt = performance.now(); anims[i] = c;
+      if (!animOn) v.pause();
+    })
              .catch(err => console.warn(err.message));
   }
 })();
