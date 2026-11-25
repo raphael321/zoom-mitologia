@@ -20,8 +20,9 @@ Abra http://localhost:8765 (o WebGL não carrega as imagens direto do arquivo, p
 
 - **Roda do mouse / ↑ ↓** — velocidade (dá para ir para trás)
 - **1–5** — efeitos: Original, Cores, Redemoinho, Ácido, Brilho
+- **A** / botão **Animação** — liga e desliga os clipes animados (Zeus, Poseidon, Estige e Hades); começa ligado
 - **F** — tela cheia
-- `?versao=animada` — troca Zeus, Poseidon, Estige e Hades pelos clipes animados em loop
+- `?versao=estatica` — abre com a animação desligada
 
 ## Como funciona
 

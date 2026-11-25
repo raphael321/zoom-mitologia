@@ -28,15 +28,17 @@
   <button data-fx="2">Redemoinho</button>
   <button data-fx="3">Ácido</button>
   <button data-fx="4">Brilho</button>
+  <button id="anim" aria-pressed="true" title="Liga/desliga os quadros animados (A)">Animação</button>
 </nav>
 
 <!--
   Cada quadro N+1 é o miolo de N reduzido a 50%; o miolo do último é o primeiro.
-  Controles: roda do mouse / ↑ ↓ = velocidade · 1–5 = efeito · F = tela cheia
-  ?versao=animada troca os quadros listados em "animados" pelos vídeos em loop.
+  Controles: roda do mouse / ↑ ↓ = velocidade · 1–5 = efeito · A = animação · F = tela cheia
+  Os quadros listados em "animados" tocam como vídeo em loop; ?versao=estatica começa com a animação desligada.
+  "feather" = largura do esfumado da borda (fração do quadro); cobre a faixa que a IA repintou na transição.
 -->
 <script id="zoom-config" type="application/json">
-{ "speed": 0.12, "feather": 0.06,
+{ "speed": 0.12, "feather": 0.1,
   "animados": { "0": "animacao/q00.mp4", "7": "animacao/q07.mp4",
                 "10": "animacao/q10.mp4", "11": "animacao/q11.mp4" },
   "imgarray": ["quadros/q00.jpg","quadros/q01.jpg","quadros/q02.jpg","quadros/q03.jpg",
@@ -47,7 +49,7 @@
 <script>
 const cfg = JSON.parse(document.getElementById('zoom-config').textContent);
 const LAYERS = 4;
-let frames = [], T = 0, speed = cfg.speed, fx = 0, last = 0, t0 = performance.now();
+let frames = [], anims = {}, animOn = true, T = 0, speed = cfg.speed, fx = 0, last = 0, t0 = performance.now();
 
 // 1) Composição do zoom num canvas 2D fora da tela
 const comp = document.createElement('canvas');
@@ -61,12 +63,14 @@ function featherMask(w, h) {
   g.fillStyle = '#000'; g.fillRect(0, 0, w, h);
   g.globalCompositeOperation = 'destination-in';
   const f = cfg.feather;
+  const smooth = x => x * x * (3 - 2 * x);   // rampa em S: sem a "quina" de luz da rampa linear
   for (const [x1, y1] of [[w, 0], [0, h]]) {
     const grad = g.createLinearGradient(0, 0, x1, y1);
-    grad.addColorStop(0, 'rgba(0,0,0,0)');
-    grad.addColorStop(f, 'rgba(0,0,0,1)');
-    grad.addColorStop(1 - f, 'rgba(0,0,0,1)');
-    grad.addColorStop(1, 'rgba(0,0,0,0)');
+    for (let k = 0; k <= 8; k++) {
+      const a = `rgba(0,0,0,${smooth(k / 8).toFixed(3)})`;
+      grad.addColorStop(f * k / 8, a);
+      grad.addColorStop(1 - f * k / 8, a);
+    }
     g.fillStyle = grad;
     g.fillRect(0, 0, w, h);
   }
@@ -97,7 +101,8 @@ function compose() {
   ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
   // b = -1 é o quadro que acabou de sair; ele cobre as bordas suavizadas do b = 0
   for (let b = -1; b < LAYERS; b++) {
-    const img = frames[((Math.floor(T) + b) % n + n) % n];
+    const k = ((Math.floor(T) + b) % n + n) % n;
+    const img = (animOn && anims[k]) || frames[k];
     const s = base * zoom / Math.pow(2, b) * (frames[0].width / img.width);
     const w = img.width * s, h = img.height * s;
     if (w < 2) break;
@@ -186,17 +191,25 @@ function frame(now) {
 }
 
 // 3) Controles
-const buttons = [...document.querySelectorAll('#ui button')];
+const buttons = [...document.querySelectorAll('#ui button[data-fx]')];
 function setFx(n) {
   fx = n;
   buttons.forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.fx === n)));
 }
 buttons.forEach(b => b.addEventListener('click', () => setFx(+b.dataset.fx)));
+const animBtn = document.getElementById('anim');
+function setAnim(on) {
+  animOn = on;
+  animBtn.setAttribute('aria-pressed', String(on));
+  Object.values(anims).forEach(c => on ? c.video.play().catch(() => {}) : c.video.pause());
+}
+animBtn.addEventListener('click', () => setAnim(!animOn));
 addEventListener('wheel', e => { speed = Math.max(-1, Math.min(1, speed - e.deltaY * 0.0005)); }, { passive: true });
 addEventListener('keydown', e => {
   if (e.key === 'ArrowUp') speed = Math.min(1, speed + 0.03);
   if (e.key === 'ArrowDown') speed = Math.max(-1, speed - 0.03);
   if (e.key >= '1' && e.key <= '5') setFx(+e.key - 1);
+  if (e.key.toLowerCase() === 'a') setAnim(!animOn);
   if (e.key.toLowerCase() === 'f') document.fullscreenElement ? document.exitFullscreen() : glc.requestFullscreen();
 });
 let idle;
@@ -224,15 +237,19 @@ function load(src) {
 
 (async () => {
   resize();
-  const animada = new URLSearchParams(location.search).get('versao') === 'animada';
-  const srcs = cfg.imgarray.map((s, i) => (animada && cfg.animados[i]) || s);
   try {
-    frames = (await Promise.all(srcs.map(load))).map(feathered);
+    frames = (await Promise.all(cfg.imgarray.map(load))).map(feathered);
   } catch (err) {
     document.getElementById('loading').textContent = err.message;
     return;
   }
   document.getElementById('loading').remove();
+  // Os clipes chegam depois, sem segurar o início; até lá aparece a pintura parada.
+  for (const [i, src] of Object.entries(cfg.animados)) {
+    load(src).then(v => { const c = feathered(v); c.video = v; anims[i] = c; if (!animOn) v.pause(); })
+             .catch(err => console.warn(err.message));
+  }
+  if (new URLSearchParams(location.search).get('versao') === 'estatica') setAnim(false);
   const fxParam = new URLSearchParams(location.search).get('fx');
   if (fxParam) setFx(+fxParam);
   requestAnimationFrame(t => { last = t; frame(t); });
