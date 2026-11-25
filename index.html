@@ -15,6 +15,10 @@
   #ui button[aria-pressed="true"] { background: #fff; color: #000; }
   #ui button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
   body.idle #ui { opacity: 0; }
+  @media (max-width: 560px) {
+    #ui { gap: 2px; padding: 4px; max-width: calc(100vw - 16px); box-sizing: border-box; }
+    #ui button { font-size: 12px; padding: 6px 8px; }
+  }
   #loading { position: fixed; inset: 0; display: grid; place-items: center;
         color: #fff8; font: 14px system-ui, sans-serif; }
 </style>
@@ -96,11 +100,15 @@ function feathered(src) {
 
 function compose() {
   const W = comp.width, H = comp.height, n = frames.length;
-  const base = Math.max(W / frames[0].width, H / frames[0].height);   // "cover"
+  // A pintura inteira cabe na menor dimensão da tela (nada de cabeça cortada em tela larga);
+  // o resto é preenchido pelos quadros de fora (b < 0), que já foram pintados em volta dela.
+  const base = Math.min(W, H) / frames[0].width;
   const zoom = Math.pow(2, T % 1);                                    // 1× → 2×
+  const aspect = Math.max(W, H) / Math.min(W, H);
+  // quantos quadros de fora precisam para cobrir a tela inclusive com as bordas esfumadas
+  const outer = Math.max(1, Math.ceil(Math.log2(aspect / (1 - 2 * cfg.feather))));
   ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
-  // b = -1 é o quadro que acabou de sair; ele cobre as bordas suavizadas do b = 0
-  for (let b = -1; b < LAYERS; b++) {
+  for (let b = -outer; b < LAYERS; b++) {
     const k = ((Math.floor(T) + b) % n + n) % n;
     const img = (animOn && anims[k]) || frames[k];
     const s = base * zoom / Math.pow(2, b) * (frames[0].width / img.width);
